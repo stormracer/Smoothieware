@@ -8,6 +8,7 @@
 #include "libs/Kernel.h"
 
 #include "modules/tools/laser/Laser.h"
+#include "modules/tools/spindle/Spindle.h"
 #include "modules/tools/extruder/ExtruderMaker.h"
 #include "modules/tools/temperaturecontrol/TemperatureControlPool.h"
 #include "modules/tools/endstops/Endstops.h"
@@ -15,6 +16,7 @@
 #include "modules/tools/scaracal/SCARAcal.h"
 #include "modules/tools/switch/SwitchPool.h"
 #include "modules/tools/temperatureswitch/TemperatureSwitch.h"
+#include "modules/tools/drillingcycles/Drillingcycles.h"
 
 #include "modules/robot/Conveyor.h"
 #include "modules/utils/simpleshell/SimpleShell.h"
@@ -28,6 +30,7 @@
 #include "Config.h"
 #include "checksumm.h"
 #include "ConfigValue.h"
+#include "StepTicker.h"
 
 // #include "libs/ChaNFSSD/SDFileSystem.h"
 #include "libs/nuts_bolts.h"
@@ -82,6 +85,11 @@ GPIO leds[5] = {
     GPIO(P4_28)
 };
 
+// debug pins, only used if defined in src/makefile
+#ifdef STEPTICKER_DEBUG_PIN
+GPIO stepticker_debug_pin(STEPTICKER_DEBUG_PIN);
+#endif
+
 void init() {
 
     // Default pins to low status
@@ -89,6 +97,11 @@ void init() {
         leds[i].output();
         leds[i]= 0;
     }
+
+#ifdef STEPTICKER_DEBUG_PIN
+    stepticker_debug_pin.output();
+    stepticker_debug_pin= 0;
+#endif
 
     Kernel* kernel = new Kernel();
 
@@ -143,10 +156,15 @@ void init() {
     // Note order is important here must be after extruder so Tn as a parameter will get executed first
     TemperatureControlPool *tp= new TemperatureControlPool();
     tp->load_tools();
-    delete tp;
+    kernel->temperature_control_pool= tp;
+    #else
+    kernel->temperature_control_pool= new TemperatureControlPool(); // so we can get just an empty temperature control array
     #endif
     #ifndef NO_TOOLS_LASER
     kernel->add_module( new Laser() );
+    #endif
+    #ifndef NO_TOOLS_SPINDLE
+    kernel->add_module( new Spindle() );
     #endif
     #ifndef NO_UTILS_PANEL
     kernel->add_module( new Panel() );
@@ -166,6 +184,9 @@ void init() {
     #ifndef NO_TOOLS_TEMPERATURESWITCH
     // Must be loaded after TemperatureControlPool
     kernel->add_module( new TemperatureSwitch() );
+    #endif
+    #ifndef NO_TOOLS_DRILLINGCYCLES
+    kernel->add_module( new Drillingcycles() );
     #endif
 
     // Create and initialize USB stuff
@@ -215,6 +236,8 @@ void init() {
             fclose(fp);
         }
     }
+
+    THEKERNEL->step_ticker->start();
 }
 
 int main()
