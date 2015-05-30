@@ -18,7 +18,6 @@ using namespace std;
 #include "libs/Hook.h"
 #include "libs/Pin.h"
 
-#include "system_LPC17xx.h" // for SystemCoreClock
 #include <math.h>
 
 class SlowTicker : public Module{
@@ -56,7 +55,7 @@ class SlowTicker : public Module{
         uint32_t max_frequency;
         uint32_t interval;
 
-        Pin ispbtn;
+        //~ Pin ispbtn;
 protected:
     int flag_1s_count;
     volatile int flag_1s_flag;

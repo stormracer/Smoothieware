@@ -1,6 +1,8 @@
-PROJECT=main
-BUILD_DIR=../build
-DEVICES=lpc1768
+PROJECT		:= main
+GCC4MBED_DIR	:= ../mbed
+DEVICES		:= NUCLEO_F411RE
+MBED_LIBS	:= fs
+EXCLUDE 	:= libs/Network/ libs/ADC/ modules/utils/panel 
 
 # BUILD_TYPE can be set to the following values:
 #  Checked - Optimizations enabled with MRI debug monitor support. (Recommended Type)
@@ -29,7 +31,7 @@ ENABLE_DEBUG_MONITOR?=0
 
 # this is the default UART baud rate used if it is not set in config
 # it is also the baud rate used to report any errors found while parsing the config file
-DEFAULT_SERIAL_BAUD_RATE?=9600
+DEFAULT_SERIAL_BAUD_RATE?=115200
 
 ifeq "$(ENABLE_DEBUG_MONITOR)" "1"
 # Can add MRI_UART_BAUD=115200 to next line if GDB fails to connect to MRI.
@@ -59,17 +61,24 @@ DEFINES += -DSTEPTICKER_DEBUG_PIN=$(STEPTICKER_DEBUG_PIN)
 endif
 
 # add any modules that you do not want included in the build
-export EXCLUDED_MODULES = tools/touchprobe
+EXCLUDE_MODULES = tools/touchprobe
 # e.g for a CNC machine
 #export EXCLUDED_MODULES = tools/touchprobe tools/laser tools/temperaturecontrol tools/extruder
 
+ifneq "$(INCLUDE_MODULE)" ""
+export EXCLUDED_MODULES = $(filter-out $(INCLUDE_MODULE),$(EXCLUDE_MODULES))
+else
+export EXCLUDED_MODULES = $(EXCLUDE_MODULES)
+endif
+
+
 # set to not compile in any network support
-#export NONETWORK = 1
+DEFINES += -DNONETWORK -DDISABLEMSD -DNO_TOOLS_TOUCHPROBE -DNO_UTILS_PANEL
 
-include $(BUILD_DIR)/build.mk
+include $(GCC4MBED_DIR)/build/gcc4mbed.mk
 
-CONSOLE?=/dev/arduino
-BAUD?=1000000
+CONSOLE?=/dev/ttyUSB0
+BAUD?=115200
 
 .PHONY: debug-store flash upload debug console dfu
 

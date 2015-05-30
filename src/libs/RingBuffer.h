@@ -10,6 +10,7 @@
 #ifndef RINGBUFFER_H
 #define RINGBUFFER_H
 
+#include "mbed.h"
 
 template<class kind, int length> class RingBuffer {
     public:
@@ -30,8 +31,6 @@ template<class kind, int length> class RingBuffer {
         volatile int          tail;
         volatile int          head;
 };
-
-#include "sLPC17xx.h"
 
 template<class kind, int length> RingBuffer<kind, length>::RingBuffer(){
     this->tail = this->head = 0;

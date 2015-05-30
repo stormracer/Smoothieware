@@ -12,7 +12,7 @@ class MCP4451 : public DigipotBase {
     public:
         MCP4451(){
             // I2C com
-            this->i2c = new mbed::I2C(p9, p10);
+            this->i2c = new mbed::I2C(PB_9, PB_8);
             this->i2c->frequency(20000);
             for (int i = 0; i < 8; i++) currents[i] = -1;
         }

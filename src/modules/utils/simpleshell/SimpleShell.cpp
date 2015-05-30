@@ -29,17 +29,17 @@
 #include "NetworkPublicAccess.h"
 #include "platform_memory.h"
 #include "SwitchPublicAccess.h"
-#include "SDFAT.h"
-
-#include "system_LPC17xx.h"
-#include "LPC17xx.h"
+#include "Thermistor.h"
 
 extern unsigned int g_maximumHeapAddress;
+
+#include <SDFileSystem.h>
 
 #include <malloc.h>
 #include <mri.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <sys/stat.h>
 
 extern "C" uint32_t  __end__;
 extern "C" uint32_t  __malloc_free_list;
@@ -68,6 +68,7 @@ const SimpleShell::ptentry_t SimpleShell::commands_table[] = {
     {"load",     SimpleShell::load_command},
     {"save",     SimpleShell::save_command},
     {"remount",  SimpleShell::remount_command},
+    {"calc_thermistor", SimpleShell::calc_thermistor_command},
 
     // unknown command
     {NULL, NULL}
@@ -238,14 +239,16 @@ void SimpleShell::ls_command( string parameters, StreamOutput *stream )
 
     DIR *d;
     struct dirent *p;
+    struct stat s;
     d = opendir(path.c_str());
     if (d != NULL) {
         while ((p = readdir(d)) != NULL) {
+            stat(p->d_name, &s); 
             stream->printf("%s", lc(string(p->d_name)).c_str());
-            if(p->d_isdir) {
+            if(S_ISDIR(s.st_mode)) {
                 stream->printf("/");
             } else if(opts.find("-s", 0, 2) != string::npos) {
-                stream->printf(" %d", p->d_fsize);
+                stream->printf(" %ld", s.st_size);
             }
             stream->printf("\r\n");
         }
@@ -255,11 +258,12 @@ void SimpleShell::ls_command( string parameters, StreamOutput *stream )
     }
 }
 
-extern SDFAT mounter;
+extern SDFileSystem sd;
 
 void SimpleShell::remount_command( string parameters, StreamOutput *stream )
 {
-    mounter.remount();
+    sd.unmount();
+    sd.mount();
     stream->printf("remounted\r\n");
 }
 
@@ -275,7 +279,7 @@ void SimpleShell::rm_command( string parameters, StreamOutput *stream )
 void SimpleShell::mv_command( string parameters, StreamOutput *stream )
 {
     string from = absolute_from_relative(shift_parameter( parameters ));
-    string to = shift_parameter(parameters);
+    string to = absolute_from_relative(shift_parameter(parameters));
     int s = rename(from.c_str(), to.c_str());
     if (s != 0) stream->printf("Could not rename %s to %s\r\n", from.c_str(), to.c_str());
     else stream->printf("renamed %s to %s\r\n", from.c_str(), to.c_str());
@@ -471,6 +475,7 @@ void SimpleShell::save_command( string parameters, StreamOutput *stream )
 // show free memory
 void SimpleShell::mem_command( string parameters, StreamOutput *stream)
 {
+/* FIXME STM32 
     bool verbose = shift_parameter( parameters ).find_first_of("Vv") != string::npos ;
     unsigned long heap = (unsigned long)_sbrk(0);
     unsigned long m = g_maximumHeapAddress - heap;
@@ -478,12 +483,12 @@ void SimpleShell::mem_command( string parameters, StreamOutput *stream)
 
     uint32_t f = heapWalk(stream, verbose);
     stream->printf("Total Free RAM: %lu bytes\r\n", m + f);
-
     stream->printf("Free AHB0: %lu, AHB1: %lu\r\n", AHB0.free(), AHB1.free());
     if (verbose) {
         AHB0.debug(stream);
         AHB1.debug(stream);
     }
+    * */
 }
 
 static uint32_t getDeviceType()
@@ -594,6 +599,41 @@ void SimpleShell::set_temp_command( string parameters, StreamOutput *stream)
     }
 }
 
+void SimpleShell::calc_thermistor_command( string parameters, StreamOutput *stream)
+{
+    string s = shift_parameter( parameters );
+    int saveto= -1;
+    // see if we have -sn as first argument
+    if(s.find("-s", 0, 2) != string::npos) {
+        // save the results to thermistor n
+        saveto= strtol(s.substr(2).c_str(), nullptr, 10);
+    }else{
+        parameters= s;
+    }
+
+    std::vector<float> trl= parse_number_list(parameters.c_str());
+    if(trl.size() == 6) {
+        // calculate the coefficients
+        float c1, c2, c3;
+        std::tie(c1, c2, c3) = Thermistor::calculate_steinhart_hart_coefficients(trl[0], trl[1], trl[2], trl[3], trl[4], trl[5]);
+        stream->printf("Steinhart Hart coefficients:  I%1.18f J%1.18f K%1.18f\n", c1, c2, c3);
+        if(saveto == -1) {
+            stream->printf("  Paste the above in the M305 S0 command, then save with M500\n");
+        }else{
+            char buf[80];
+            int n = snprintf(buf, sizeof(buf), "M305 S%d I%1.18f J%1.18f K%1.18f", saveto, c1, c2, c3);
+            string g(buf, n);
+            Gcode gcode(g, &(StreamOutput::NullStream));
+            THEKERNEL->call_event(ON_GCODE_RECEIVED, &gcode );
+            stream->printf("  Setting Thermistor %d to those settings, save with M500\n", saveto);
+        }
+
+    }else{
+        // give help
+        stream->printf("Usage: calc_thermistor T1,R1,T2,R2,T3,R3\n");
+    }
+}
+
 // used to test out the get public data events for switch
 void SimpleShell::switch_command( string parameters, StreamOutput *stream)
 {
@@ -640,5 +680,7 @@ void SimpleShell::help_command( string parameters, StreamOutput *stream )
     stream->printf("net\r\n");
     stream->printf("load [file] - loads a configuration override file from soecified name or config-override\r\n");
     stream->printf("save [file] - saves a configuration override file as specified filename or as config-override\r\n");
+    stream->printf("upload filename - saves a stream of text to the named file\r\n");
+    stream->printf("calc_thermistor [-s0] T1,R1,T2,R2,T3,R3 - calculate the Steinhart Hart coefficients for a thermistor\r\n");
 }
 

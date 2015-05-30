@@ -26,6 +26,8 @@
 #include "Pauser.h"
 #include "ConfigValue.h"
 #include "PID_Autotuner.h"
+#include "SerialMessage.h"
+#include "utils.h"
 
 // Temp sensor implementations:
 #include "Thermistor.h"
@@ -44,6 +46,7 @@
 #define hysteresis_checksum                CHECKSUM("hysteresis")
 #define heater_pin_checksum                CHECKSUM("heater_pin")
 #define max_temp_checksum                  CHECKSUM("max_temp")
+#define min_temp_checksum                  CHECKSUM("min_temp")
 
 #define get_m_code_checksum                CHECKSUM("get_m_code")
 #define set_m_code_checksum                CHECKSUM("set_m_code")
@@ -128,8 +131,9 @@ void TemperatureControl::load_config()
 
     this->designator          = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, designator_checksum)->by_default(string("T"))->as_string();
 
-    // Max temperature we are not allowed to get over
+    // Max and min temperatures we are not allowed to get over (Safety)
     this->max_temp = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, max_temp_checksum)->by_default(1000)->as_number();
+    this->min_temp = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, min_temp_checksum)->by_default(0)->as_number();
 
     // Heater pin
     this->heater_pin.from_string( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, heater_pin_checksum)->by_default("nc")->as_string());
@@ -170,7 +174,9 @@ void TemperatureControl::load_config()
         this->windup = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, windup_checksum)->by_default(false)->as_bool();
         this->heater_pin.max_pwm( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, max_pwm_checksum)->by_default(255)->as_number() );
         this->heater_pin.set(0);
+        /* MRI STM32
         set_low_on_debug(heater_pin.port_number, heater_pin.pin);
+        */
         // activate SD-DAC timer
         THEKERNEL->slow_ticker->attach( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, pwm_frequency_checksum)->by_default(2000)->as_number(), &heater_pin, &Pwm::on_tick);
     }
@@ -208,6 +214,38 @@ void TemperatureControl::on_gcode_received(void *argument)
             return;
         }
 
+        if (gcode->m == 305) { // set or get sensor settings
+            gcode->mark_as_taken();
+            if (gcode->has_letter('S') && (gcode->get_value('S') == this->pool_index)) {
+                TempSensor::sensor_options_t args= gcode->get_args();
+                args.erase('S'); // don't include the S
+                if(args.size() > 0) {
+                    // set the new options
+                    if(sensor->set_optional(args)) {
+                        this->sensor_settings= true;
+                    }else{
+                        gcode->stream->printf("Unable to properly set sensor settings, make sure you specify all required values\n");
+                    }
+                }else{
+                    // don't override
+                    this->sensor_settings= false;
+                }
+
+            }else if(!gcode->has_letter('S')) {
+                gcode->stream->printf("%s(S%d): using %s\n", this->designator.c_str(), this->pool_index, this->readonly?"Readonly" : this->use_bangbang?"Bangbang":"PID");
+                sensor->get_raw();
+                TempSensor::sensor_options_t options;
+                if(sensor->get_optional(options)) {
+                    for(auto &i : options) {
+                        // foreach optional value
+                        gcode->stream->printf("%s(S%d): %c%1.18f\n", this->designator.c_str(), this->pool_index, i.first, i.second);
+                    }
+                }
+            }
+
+            return;
+        }
+
         // readonly sensors don't handle the rest
         if(this->readonly) return;
 
@@ -229,24 +267,6 @@ void TemperatureControl::on_gcode_received(void *argument)
                 gcode->stream->printf("%s(S%d): Pf:%g If:%g Df:%g X(I_max):%g max pwm: %d O:%d\n", this->designator.c_str(), this->pool_index, this->p_factor, this->i_factor / this->PIDdt, this->d_factor * this->PIDdt, this->i_max, this->heater_pin.max_pwm(), o);
             }
 
-        } else if (gcode->m == 305) { // set sensor settings
-            gcode->mark_as_taken();
-            if (gcode->has_letter('S') && (gcode->get_value('S') == this->pool_index)) {
-                this->sensor_settings= true;
-                TempSensor::sensor_options_t options;
-                if(sensor->get_optional(options)) {
-                    for(auto &i : options) {
-                        // foreach optional value
-                        char c = i.first;
-                        if(gcode->has_letter(c)) { // set new value
-                            i.second = gcode->get_value(c);
-                        }
-                    }
-                    // set the new options
-                    sensor->set_optional(options);
-                }
-            }
-
         } else if (gcode->m == 500 || gcode->m == 503) { // M500 saves some volatile settings to config override file, M503 just prints the settings
             gcode->stream->printf(";PID settings:\nM301 S%d P%1.4f I%1.4f D%1.4f X%1.4f Y%d\n", this->pool_index, this->p_factor, this->i_factor / this->PIDdt, this->d_factor * this->PIDdt, this->i_max, this->heater_pin.max_pwm());
 
@@ -256,7 +276,7 @@ void TemperatureControl::on_gcode_received(void *argument)
                 if(sensor->get_optional(options) && !options.empty()) {
                     gcode->stream->printf(";Optional temp sensor specific settings:\nM305 S%d", this->pool_index);
                     for(auto &i : options) {
-                        gcode->stream->printf(" %c%1.4f", i.first, i.second);
+                        gcode->stream->printf(" %c%1.18f", i.first, i.second);
                     }
                     gcode->stream->printf("\n");
                 }
@@ -290,6 +310,12 @@ void TemperatureControl::on_gcode_received(void *argument)
                     this->set_desired_temperature(v);
                     // wait for temp to be reached, no more gcodes will be fetched until this is complete
                     if( gcode->m == this->set_and_wait_m_code) {
+                        if(isinf(get_temperature()) && isinf(sensor->get_temperature())) {
+                            THEKERNEL->streams->printf("Temperature reading is unreliable HALT asserted - reset or M999 required\n");
+                            THEKERNEL->call_event(ON_HALT, nullptr);
+                            return;
+                        }
+
                         this->waiting = true; // on_second_tick will announce temps
                         while ( get_temperature() < target_temperature ) {
                             THEKERNEL->call_event(ON_IDLE, this);
@@ -389,7 +415,7 @@ uint32_t TemperatureControl::thermistor_read_tick(uint32_t dummy)
     }
 
     if (target_temperature > 0) {
-        if (isinf(temperature)) {
+        if (isinf(temperature) || temperature < min_temp) {
             this->min_temp_violated = true;
             target_temperature = UNDEFINED;
             heater_pin.set((this->o = 0));

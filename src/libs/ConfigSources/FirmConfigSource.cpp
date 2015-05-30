@@ -27,7 +27,6 @@ FirmConfigSource::FirmConfigSource(const char* name){
 
 // Transfer all values found in the file to the passed cache
 void FirmConfigSource::transfer_values_to_cache( ConfigCache* cache ){
-
     char* p = &_binary_config_default_start;
     // For each line
     while( p < &_binary_config_default_end ){
@@ -72,7 +71,6 @@ string FirmConfigSource::read( uint16_t check_sums[3] ){
         value = process_line_from_ascii_config(line, check_sums);
         if(!value.empty()) return value;
     }
-
     return value;
 }
 

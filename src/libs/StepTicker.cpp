@@ -13,7 +13,6 @@
 #include "libs/Kernel.h"
 #include "StepperMotor.h"
 #include "StreamOutputPool.h"
-#include "system_LPC17xx.h" // mbed.h lib
 #include <math.h>
 #include <mri.h>
 
@@ -22,6 +21,8 @@
 extern GPIO stepticker_debug_pin;
 #endif
 
+#define TICK_STEPPER_TIMER_PRESCALER    1000
+#define RESET_TICK_TIMER_PRESCALER      10
 
 // StepTicker handles the base frequency ticking for the Stepper Motors / Actuators
 // It has a list of those, and calls their tick() functions at regular intervals
@@ -32,26 +33,32 @@ StepTicker* StepTicker::global_step_ticker;
 StepTicker::StepTicker(){
     StepTicker::global_step_ticker = this;
 
-    // Configure the timer
-    LPC_TIM0->MR0 = 10000000;       // Initial dummy value for Match Register
-    LPC_TIM0->MCR = 3;              // Match on MR0, reset on MR0, match on MR1
-    LPC_TIM0->TCR = 0;              // Disable interrupt
-
-    LPC_SC->PCONP |= (1 << 2);      // Power Ticker ON
-    LPC_TIM1->MR0 = 1000000;
-    LPC_TIM1->MCR = 1;
-    LPC_TIM1->TCR = 0;              // Disable interrupt
-
-    // Setup RIT timer
-    LPC_SC->PCONP |= (1L<<16); // RIT Power
-    LPC_SC->PCLKSEL1 &= ~(3L << 26); // Clear PCLK_RIT bits;
-    LPC_SC->PCLKSEL1 |=  (1L << 26); // Set PCLK_RIT bits to 0x01;
-    LPC_RIT->RICOMPVAL = (uint32_t)(((SystemCoreClock / 1000000L) * 1000)-1); // 1ms period
-    LPC_RIT->RICOUNTER = 0;
-    // Set counter clear/reset after interrupt
-    LPC_RIT->RICTRL |= (2L); //RITENCLR
-    LPC_RIT->RICTRL &= ~(8L); // disable
-    //NVIC_SetVector(RIT_IRQn, (uint32_t)&_ritisr);
+    /* Timer 9, 10 and 11 are located on APB2 bus */
+    RCC->APB2ENR |= RCC_APB2ENR_TIM9EN | RCC_APB2ENR_TIM10EN | RCC_APB2ENR_TIM11EN;
+    
+    /* Acceleration timer */
+    TIM9->PSC = TICK_STEPPER_TIMER_PRESCALER - 1;   // Set prescaler
+    TIM9->ARR = 1000 - 1;                           // Set auto-reload
+    TIM9->CNT = 0;                                  // Reset
+    TIM9->EGR |= TIM_EGR_UG;                        // Force update
+    TIM9->SR &= ~TIM_SR_UIF;                        // Clear the update flag
+    TIM9->DIER |= TIM_DIER_UIE;                     // Enable interrupt on update event
+ 
+    /* Stepping timer */
+    TIM10->PSC = TICK_STEPPER_TIMER_PRESCALER - 1;
+    TIM10->ARR = 1000 - 1;
+    TIM10->CNT = 0;
+    TIM10->EGR |= TIM_EGR_UG;
+    TIM10->SR &= ~TIM_SR_UIF;
+    TIM10->DIER |= TIM_DIER_UIE;
+    
+    /* Reset stepper */
+    TIM11->PSC = RESET_TICK_TIMER_PRESCALER - 1;
+    TIM11->ARR = 1000 - 1;
+    TIM11->CNT = 0;
+    TIM11->EGR |= TIM_EGR_UG;
+    TIM11->SR &= ~TIM_SR_UIF;
+    TIM11->DIER |= TIM_DIER_UIE;
 
     // Default start values
     this->a_move_finished = false;
@@ -70,46 +77,52 @@ StepTicker::~StepTicker() {
 
 //called when everythinf is setup and interrupts can start
 void StepTicker::start() {
-    NVIC_EnableIRQ(TIMER0_IRQn);     // Enable interrupt handler
-    NVIC_EnableIRQ(TIMER1_IRQn);     // Enable interrupt handler
-    NVIC_EnableIRQ(RIT_IRQn);
+    /* Enable all interrupts */
+    NVIC_EnableIRQ(TIM1_BRK_TIM9_IRQn);
+    NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn);
+    NVIC_EnableIRQ(TIM1_TRG_COM_TIM11_IRQn);
 }
 
 // Set the base stepping frequency
 void StepTicker::set_frequency( float frequency ){
     this->frequency = frequency;
-    this->period = floorf((SystemCoreClock/4.0F)/frequency);  // SystemCoreClock/4 = Timer increments in a second
-    LPC_TIM0->MR0 = this->period;
-    if( LPC_TIM0->TC > LPC_TIM0->MR0 ){
-        LPC_TIM0->TCR = 3;  // Reset
-        LPC_TIM0->TCR = 1;  // Reset
-    }
+    this->period = floorf((SystemCoreClock / TICK_STEPPER_TIMER_PRESCALER)/frequency);  // SystemCoreClock = Timer increments in a second
+
+    TIM10->CR1 &= ~TIM_CR1_CEN;
+    TIM10->ARR = this->period - 1;
+    TIM10->CNT = 0;
+    TIM10->CR1 |= TIM_CR1_CEN;
+
 }
 
 // Set the reset delay
 void StepTicker::set_reset_delay( float microseconds ){
-    uint32_t delay = floorf((SystemCoreClock/4.0F)*(microseconds/1000000.0F));  // SystemCoreClock/4 = Timer increments in a second
-    LPC_TIM1->MR0 = delay;
+    uint32_t delay = floorf((SystemCoreClock / RESET_TICK_TIMER_PRESCALER) * (microseconds/1000000.0F));  // SystemCoreClock/4 = Timer increments in a second
+    TIM11->ARR = delay - 1;
 }
 
 // this is the number of acceleration ticks per second
 void StepTicker::set_acceleration_ticks_per_second(uint32_t acceleration_ticks_per_second) {
-    uint32_t us= roundf(1000000.0F/acceleration_ticks_per_second); // period in microseconds
-    LPC_RIT->RICOMPVAL = (uint32_t)(((SystemCoreClock / 1000000L) * us)-1); // us
-    LPC_RIT->RICOUNTER = 0;
-    LPC_RIT->RICTRL |= (8L); // Enable rit
+    uint32_t arr = ((SystemCoreClock / TICK_STEPPER_TIMER_PRESCALER) / acceleration_ticks_per_second) - 1;
+
+    TIM9->CR1 &= ~TIM_CR1_CEN;// Stop the timer
+    TIM9->ARR = arr;    
+    TIM9->CNT = 0;            // Reset the timer
+    TIM9->CR1 |= TIM_CR1_CEN; // Enable the timer
+
 }
 
 // Synchronize the acceleration timer, and optionally schedule it to fire now
 void StepTicker::synchronize_acceleration(bool fire_now) {
-    LPC_RIT->RICOUNTER = 0;
+    /* Reset counter */
+    TIM9->CNT = 0;
     if(fire_now){
-        NVIC_SetPendingIRQ(RIT_IRQn);
+        NVIC_SetPendingIRQ(TIM1_BRK_TIM9_IRQn);
     }else{
-        if(NVIC_GetPendingIRQ(RIT_IRQn)) {
+        if(NVIC_GetPendingIRQ(TIM1_BRK_TIM9_IRQn)) {
             // clear pending interrupt so it does not interrupt immediately
-            LPC_RIT->RICTRL |= 1L; // also clear the interrupt in case it fired
-            NVIC_ClearPendingIRQ(RIT_IRQn);
+            TIM9->SR &= ~TIM_SR_UIF;
+            NVIC_ClearPendingIRQ(TIM1_BRK_TIM9_IRQn);
         }
     }
 }
@@ -142,19 +155,26 @@ inline void StepTicker::unstep_tick(){
     this->unstep.reset();
 }
 
-extern "C" void TIMER1_IRQHandler (void){
-    LPC_TIM1->IR |= 1 << 0;
-    StepTicker::global_step_ticker->unstep_tick();
+extern "C" void TIM1_TRG_COM_TIM11_IRQHandler (void){
+    if((TIM11->SR & TIM_SR_UIF) != 0)   {
+        TIM11->SR &= ~TIM_SR_UIF;
+        StepTicker::global_step_ticker->unstep_tick();
+    }
 }
 
 // The actual interrupt handler where we do all the work
-extern "C" void TIMER0_IRQHandler (void){
-    StepTicker::global_step_ticker->TIMER0_IRQHandler();
+extern "C" void TIM1_UP_TIM10_IRQHandler (void){
+    if((TIM10->SR & TIM_SR_UIF) != 0)   {
+        TIM10->SR &= ~TIM_SR_UIF;
+        StepTicker::global_step_ticker->step_tick();
+    }
 }
 
-extern "C" void RIT_IRQHandler (void){
-    LPC_RIT->RICTRL |= 1L;
-    StepTicker::global_step_ticker->acceleration_tick();
+extern "C" void TIM1_BRK_TIM9_IRQHandler (void){
+    if((TIM9->SR & TIM_SR_UIF) != 0)   {
+        TIM9->SR &= ~TIM_SR_UIF;
+        StepTicker::global_step_ticker->acceleration_tick();
+    }
 }
 
 extern "C" void PendSV_Handler(void) {
@@ -186,9 +206,8 @@ void  StepTicker::acceleration_tick() {
     }
 }
 
-void StepTicker::TIMER0_IRQHandler (void){
-    // Reset interrupt register
-    LPC_TIM0->IR |= 1 << 0;
+void StepTicker::step_tick (void){
+
     tick_cnt++; // count number of ticks
 
     // Step pins NOTE takes 1.2us when nothing to step, 1.8-2us for one motor stepped and 2.6us when two motors stepped, 3.167us when three motors stepped
@@ -205,8 +224,8 @@ void StepTicker::TIMER0_IRQHandler (void){
     // right now it takes about 3-4us but if the unstep were near 10uS or greater it would be an issue
     // also it takes at least 2us to get here so even when set to 1us pulse width it will still be about 3us
     if( this->unstep.any()){
-        LPC_TIM1->TCR = 3;
-        LPC_TIM1->TCR = 1;
+        /* Configure reset timer in one pulse mode to run after us */
+        TIM11->CR1 |= TIM_CR1_CEN | TIM_CR1_OPM;
     }
     // just let it run it will fire every 143 seconds
     // else{
@@ -220,9 +239,7 @@ void StepTicker::TIMER0_IRQHandler (void){
 
     // If a move finished in this tick, we have to tell the actuator to act accordingly
     if(this->do_move_finished.load() > 0){
-        // we delegate the slow stuff to the pendsv handler which will run as soon as this interrupt exits
-        //NVIC_SetPendingIRQ(PendSV_IRQn); this doesn't work
-        SCB->ICSR = 0x10000000; // SCB_ICSR_PENDSVSET_Msk;
+        SCB->ICSR |= SCB_ICSR_PENDSVSET_Msk;
     }
 }
 
@@ -240,7 +257,7 @@ void StepTicker::add_motor_to_active_list(StepperMotor* motor)
     bool enabled= active_motor.any(); // see if interrupt was previously enabled
     active_motor[motor->index]= 1;
     if(!enabled) {
-        LPC_TIM0->TCR = 1;               // Enable interrupt
+        TIM10->CR1 |= TIM_CR1_CEN;
     }
 }
 
@@ -250,7 +267,7 @@ void StepTicker::remove_motor_from_active_list(StepperMotor* motor)
     active_motor[motor->index]= 0;
     // If we have no motor to work on, disable the whole interrupt
     if(this->active_motor.none()){
-        LPC_TIM0->TCR = 0;               // Disable interrupt
+        TIM10->CR1 &= ~TIM_CR1_CEN;
         tick_cnt= 0;
     }
 }

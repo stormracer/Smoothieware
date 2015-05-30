@@ -97,27 +97,35 @@ Kernel::Kernel(){
     // TODO : These should go into platform-specific files
     // LPC17xx-specific
     NVIC_SetPriorityGrouping(0);
-    NVIC_SetPriority(TIMER0_IRQn, 2);
-    NVIC_SetPriority(TIMER1_IRQn, 1);
-    NVIC_SetPriority(TIMER2_IRQn, 4);
+    NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 2);
+    NVIC_SetPriority(TIM1_TRG_COM_TIM11_IRQn, 1);
+    // Slow ticker interupt
+    NVIC_SetPriority(TIM4_IRQn, 4);
     NVIC_SetPriority(PendSV_IRQn, 3);
-    NVIC_SetPriority(RIT_IRQn, 3); // we make acceleration tick the same prio as pendsv so it can't be pre-empted by end of block
+    NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 3); // we make acceleration tick the same prio as pendsv so it can't be pre-empted by end of block
 
     // Set other priorities lower than the timers
     NVIC_SetPriority(ADC_IRQn, 5);
-    NVIC_SetPriority(USB_IRQn, 5);
+    NVIC_SetPriority(OTG_FS_IRQn, 5);
+
+    /* Set all external interrupts to lower priority */
+    NVIC_SetPriority(EXTI0_IRQn, 16);
+    NVIC_SetPriority(EXTI1_IRQn, 16);
+    NVIC_SetPriority(EXTI2_IRQn, 16);
+    NVIC_SetPriority(EXTI3_IRQn, 16);
+    NVIC_SetPriority(EXTI4_IRQn, 16);
+    NVIC_SetPriority(EXTI9_5_IRQn, 16);
+    NVIC_SetPriority(EXTI15_10_IRQn, 16);
 
     // If MRI is enabled
     if( MRI_ENABLE ){
-        if( NVIC_GetPriority(UART0_IRQn) > 0 ){ NVIC_SetPriority(UART0_IRQn, 5); }
-        if( NVIC_GetPriority(UART1_IRQn) > 0 ){ NVIC_SetPriority(UART1_IRQn, 5); }
-        if( NVIC_GetPriority(UART2_IRQn) > 0 ){ NVIC_SetPriority(UART2_IRQn, 5); }
-        if( NVIC_GetPriority(UART3_IRQn) > 0 ){ NVIC_SetPriority(UART3_IRQn, 5); }
+        if( NVIC_GetPriority(USART1_IRQn) > 0 ){ NVIC_SetPriority(USART1_IRQn, 5); }
+        if( NVIC_GetPriority(USART2_IRQn) > 0 ){ NVIC_SetPriority(USART2_IRQn, 5); }
+        if( NVIC_GetPriority(USART6_IRQn) > 0 ){ NVIC_SetPriority(USART6_IRQn, 5); }
     }else{
-        NVIC_SetPriority(UART0_IRQn, 5);
-        NVIC_SetPriority(UART1_IRQn, 5);
-        NVIC_SetPriority(UART2_IRQn, 5);
-        NVIC_SetPriority(UART3_IRQn, 5);
+        NVIC_SetPriority(USART1_IRQn, 5);
+        NVIC_SetPriority(USART2_IRQn, 5);
+        NVIC_SetPriority(USART6_IRQn, 5);
     }
 
     // Configure the step ticker
